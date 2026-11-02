@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# مطلوب لإنشاء Release
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -28,8 +32,19 @@ jobs:
       - name: Build release APK
         run: flutter build apk --release
 
-      - name: Upload APK
+      - name: Rename APK
+        run: cp build/app/outputs/flutter-apk/app-release.apk github-zip-pusher.apk
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: github-zip-pusher-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: github-zip-pusher.apk
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: GitHub ZIP Pusher v1.0.${{ github.run_number }}
+          files: github-zip-pusher.apk
+          generate_release_notes: true
