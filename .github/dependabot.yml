@@ -1,0 +1,7 @@
+# يقترح تحديث الإجراءات المثبّتة بـ SHA في .github/workflows (ويُحدّث التعليق بجانبها).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

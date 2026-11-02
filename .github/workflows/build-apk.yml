@@ -3,31 +3,77 @@ name: Build APK
 on:
   push:
     branches: [main]
+    # تعديل التوثيق أو إعدادات المستودع وحدها لا يغيّر الـ APK، فلا بناء ولا Release.
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - 'LICENSE'
+      - '.github/dependabot.yml'
   workflow_dispatch:
+    inputs:
+      release:
+        description: 'انشر الـ APK في GitHub Release بعد نجاح البناء'
+        type: boolean
+        default: true
 
-# مطلوب لإنشاء Release
+# القراءة فقط افتراضيًا؛ contents: write تُمنح لمهمة النشر وحدها (أسفل).
 permissions:
-  contents: write
+  contents: read
 
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+# الإجراءات مثبّتة بـ SHA كامل (التاجات قابلة للنقل)، والتعليق بجانب كل واحد
+# يذكر إصداره. يحدّثها Dependabot شهريًا (.github/dependabot.yml).
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: subosito/flutter-action@v2
+      # إصدار Flutter مثبّت لتكون النتائج قابلة للتكرار؛ غيّره يدويًا عند الترقية.
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: stable
+          flutter-version: '3.47.8'
           cache: true
+
+      # pubspec.lock يثبّت إصدارات الحزم؛ بدونه قد يختلف بناء اليوم عن بناء الغد.
+      - name: Check pubspec.lock
+        id: lock
+        run: |
+          if [ -f pubspec.lock ]; then
+            echo "committed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=pubspec.lock::الملف غير موجود في المستودع. نزّل Artifact باسم pubspec-lock من هذا التشغيل وأضف الملف إلى جذر المشروع."
+          fi
 
       # يولّد مجلد android ويضبط الصلاحيات ثم flutter pub get
       - name: Setup project
         run: bash ./setup.sh
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+
+      - name: Test
+        run: |
+          if [ -d test ] && [ -n "$(find test -name '*_test.dart' -print -quit)" ]; then
+            flutter test
+          else
+            echo "لا توجد اختبارات بعد — تم التخطي."
+          fi
 
       - name: Build release APK
         run: flutter build apk --release
@@ -36,15 +82,46 @@ jobs:
         run: cp build/app/outputs/flutter-apk/app-release.apk github-zip-pusher.apk
 
       - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: github-zip-pusher-apk
           path: github-zip-pusher.apk
+          if-no-files-found: error
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Upload generated pubspec.lock
+        if: steps.lock.outputs.committed == 'false'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: GitHub ZIP Pusher v1.0.${{ github.run_number }}
-          files: github-zip-pusher.apk
-          generate_release_notes: true
+          name: pubspec-lock
+          path: pubspec.lock
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.event_name == 'push' || inputs.release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # الصلاحية الوحيدة الكاتبة في الملف، ولا تُنفَّذ فيها أي أوامر بناء.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: github-zip-pusher-apk
+
+      # gh مثبّت على المشغّلات؛ لا حاجة لإجراء خارجي يملك contents: write.
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v1.0.${{ github.run_number }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # إعادة تشغيل المهمة نفسها: حدّث الملف بدل الفشل.
+            gh release upload "$TAG" github-zip-pusher.apk --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" github-zip-pusher.apk \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "GitHub ZIP Pusher $TAG" \
+              --generate-notes
+          fi

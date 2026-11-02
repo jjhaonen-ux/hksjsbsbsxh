@@ -5,9 +5,20 @@ import '../services/github_service.dart';
 import '../services/token_store.dart';
 
 class TokenScreen extends StatefulWidget {
-  const TokenScreen({super.key, required this.onAuthenticated});
+  const TokenScreen({super.key, required this.onAuthenticated, this.notice});
 
-  final void Function(String token, GitHubUser user) onAuthenticated;
+  /// Hands over the service that verified the token (the caller owns it from
+  /// now on) and, when saving the token failed, a warning to show.
+  final void Function(
+    String token,
+    GitHubUser user,
+    GitHubService service,
+    String? warning,
+  ) onAuthenticated;
+
+  /// Explains why the user is asked for a token again (e.g. the saved one was
+  /// revoked or expired).
+  final String? notice;
 
   @override
   State<TokenScreen> createState() => _TokenScreenState();
@@ -35,18 +46,38 @@ class _TokenScreenState extends State<TokenScreen> {
       _busy = true;
       _error = null;
     });
+    final service = GitHubService(token: token);
+
+    // 1) Is the token valid? Only a failure HERE means "bad token".
+    final GitHubUser user;
     try {
-      final service = GitHubService(token: token);
-      final user = await service.currentUser();
-      await const TokenStore().write(token);
-      if (!mounted) return;
-      widget.onAuthenticated(token, user);
+      user = await service.currentUser();
     } catch (e) {
+      service.close();
       if (!mounted) return;
-      setState(() => _error = e.toString());
-    } finally {
-      if (mounted) setState(() => _busy = false);
+      setState(() {
+        _error = e.toString();
+        _busy = false;
+      });
+      return;
     }
+
+    // 2) Remember it. Failing to do so must not turn a good token into a
+    //    "login failed": the user simply stays signed in for this session.
+    String? warning;
+    try {
+      await const TokenStore().write(token);
+    } catch (_) {
+      warning = 'تم الدخول، لكن تعذر حفظ التوكن على هذا الجهاز؛ '
+          'سيُطلب منك إدخاله مجددًا عند فتح التطبيق لاحقًا.';
+    }
+
+    if (!mounted) {
+      service.close();
+      return;
+    }
+    widget.onAuthenticated(token, user, service, warning);
+    if (mounted) setState(() => _busy = false);
   }
 
   @override
@@ -57,6 +88,15 @@ class _TokenScreenState extends State<TokenScreen> {
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
+            if (widget.notice != null)
+              Card(
+                color: Theme.of(context).colorScheme.secondaryContainer,
+                margin: const EdgeInsets.only(bottom: 16),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(widget.notice!),
+                ),
+              ),
             const Text(
               'أدخل Personal Access Token. يُخزَّن مشفرًا عبر Keystore '
               'ولا يُرسل إلى أي خادم غير api.github.com.',
@@ -67,6 +107,13 @@ class _TokenScreenState extends State<TokenScreen> {
               obscureText: _obscure,
               autocorrect: false,
               enableSuggestions: false,
+              // Tokens are Latin text: keep them left-to-right inside the
+              // Arabic layout.
+              textDirection: TextDirection.ltr,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) {
+                if (!_busy) _submit();
+              },
               decoration: InputDecoration(
                 labelText: 'التوكن',
                 border: const OutlineInputBorder(),
@@ -78,8 +125,12 @@ class _TokenScreenState extends State<TokenScreen> {
             ),
             const SizedBox(height: 12),
             const SelectableText(
-              'الصلاحيات المطلوبة: repo (كلاسيكي) أو '
-              'Administration + Contents (Fine-grained)',
+              'الصلاحيات المطلوبة: repo (كلاسيكي؛ ويكفي public_repo إن كانت '
+              'مستودعاتك عامة فقط) أو Administration + Contents (Fine-grained).\n'
+              'لرفع ملفات .github/workflows أضف أيضًا: workflow (كلاسيكي) أو '
+              'Workflows (Fine-grained). وفي Fine-grained يُنصح باختيار '
+              'All repositories لأن المستودع الجديد لا يكون ضمن مستودعات '
+              'محددة مسبقًا.',
               style: TextStyle(fontSize: 12),
             ),
             if (_error != null) ...[
