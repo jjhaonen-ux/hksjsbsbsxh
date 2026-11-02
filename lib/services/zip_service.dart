@@ -151,7 +151,7 @@ class ZipService {
           ? content
           : Uint8List.fromList(content as List<int>);
 
-      final absPath = p.join(workDir.path, ...relative.split('/'));
+      final absPath = p.joinAll([workDir.path, ...relative.split('/')]);
       final file = File(absPath);
       await file.parent.create(recursive: true);
       await file.writeAsBytes(data, flush: false);
