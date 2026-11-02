@@ -16,5 +16,18 @@ for f in android/app/build.gradle android/app/build.gradle.kts; do
   [ -f "$f" ] && sed -i -E 's/minSdk(Version)? ?=? ?flutter\.minSdkVersion/minSdk = 23/; s/minSdkVersion flutter\.minSdkVersion/minSdkVersion 23/' "$f"
 done
 
+# بعض الإضافات (مثل file_picker) تُترجَم مقابل SDK أقدم من المطلوب (36)،
+# فنفرض compileSdk 36 على كل مكتبات المشروع عبر init script لـ Gradle.
+mkdir -p "$HOME/.gradle/init.d"
+cat > "$HOME/.gradle/init.d/force-compile-sdk.gradle" <<'GRADLE'
+allprojects {
+    afterEvaluate { p ->
+        if (p != p.rootProject && p.name != 'app' && p.hasProperty('android')) {
+            p.android.compileSdkVersion 36
+        }
+    }
+}
+GRADLE
+
 flutter pub get
 echo "تم. للبناء: flutter build apk --release"
